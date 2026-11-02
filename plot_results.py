@@ -11,6 +11,16 @@ METRICS = [
     "Accuracy", "Balanced Accuracy", "Precision (attack)",
     "Recall / Detection Rate (attack)", "F1 (attack)", "F1 (macro)", "ROC AUC",
 ]
+METRIC_COLORS = [
+    "#2563EB", "#16A34A", "#F59E0B", "#DC2626",
+    "#7C3AED", "#0891B2", "#64748B",
+]
+MODEL_COLORS = {
+    "Logistic Regression": "#2563EB",
+    "Decision Tree": "#16A34A",
+    "Random Forest": "#F59E0B",
+    "XGBoost": "#7C3AED",
+}
 
 
 def main() -> None:
@@ -34,7 +44,7 @@ def main() -> None:
     fig, axes = plt.subplots(1, 2, figsize=(16, 7), sharey=True)
     for ax, split in zip(axes, ("Validation", "Test")):
         subset = results.loc[results["Split"] == split].set_index("Model")
-        subset[METRICS].plot(kind="bar", ax=ax, width=0.82, colormap="tab10")
+        subset[METRICS].plot(kind="bar", ax=ax, width=0.82, color=METRIC_COLORS)
         ax.set_title(f"{split} results")
         ax.set_xlabel("")
         ax.set_ylabel("Score (0 to 1)")
@@ -61,6 +71,25 @@ def main() -> None:
     axes[0].set_ylabel("False negatives")
     fig.tight_layout()
     fig.savefig(args.output_dir / "test_set_errors.png", dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+    # False alarm rate is a cost metric; isolate it and label the direction clearly.
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+    for ax, split in zip(axes, ("Validation", "Test")):
+        subset = results.loc[results["Split"] == split]
+        bar_colors = [MODEL_COLORS.get(model, "#64748B") for model in subset["Model"]]
+        bars = ax.bar(subset["Model"], subset["False Alarm Rate"], color=bar_colors)
+        ax.bar_label(bars, labels=[f"{value:.2%}" for value in subset["False Alarm Rate"]], padding=3, fontsize=8)
+        ax.set_title(f"{split} false alarm rate")
+        ax.set_xlabel("")
+        ax.tick_params(axis="x", rotation=15)
+        ax.grid(axis="y", alpha=0.25)
+    axes[0].set_ylabel("False alarm rate (lower is better)")
+    far_max = max(float(results["False Alarm Rate"].max()) * 1.2, 0.01)
+    axes[0].set_ylim(0, far_max)
+    fig.suptitle("False alarms by held-out partition (lower is better)")
+    fig.tight_layout()
+    fig.savefig(args.output_dir / "false_alarm_rate.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
     test_results = results.loc[results["Split"] == "Test"]

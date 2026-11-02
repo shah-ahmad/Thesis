@@ -82,9 +82,9 @@ The day-based result may be lower than the earlier random row-split result. That
 
 ## Charts
 
-If Plotly is installed, the benchmark automatically opens an interactive chart comparing validation and test metrics and saves `benchmark_dashboard.html` beside the results CSV. Metrics still print and save when Plotly is not installed; only the interactive chart is skipped.
+If Plotly is installed, the benchmark automatically opens an interactive chart comparing validation and test performance metrics and saves `benchmark_dashboard.html` beside the results CSV. Every metric has its own distinct color. False alarm rate is in a separate chart, clearly marked lower-is-better, saved as `false_alarm_dashboard.html`. Metrics still print and save when Plotly is not installed; only the interactive charts are skipped.
 
-Customize the interactive chart by editing `CHART_WIDTH`, `CHART_HEIGHT`, and `CHART_COLORS` near the top of `experiment.py`.
+Customize the interactive chart size and palettes by editing `CHART_WIDTH`, `CHART_HEIGHT`, `METRIC_COLORS`, and `MODEL_COLORS` near the top of `experiment.py`.
 
 To create static PNG charts from a completed results CSV (requires Matplotlib):
 
@@ -92,7 +92,7 @@ To create static PNG charts from a completed results CSV (requires Matplotlib):
 python .\plot_results.py
 ```
 
-The charts are saved in `visuals/` and separate validation scores from final test scores.
+The charts are saved in `visuals/` and separate validation scores from final test scores. Performance metrics use distinct colors; false alarm rate has its own figure and is labeled lower-is-better.
 
 ## Reproducibility and limitations
 

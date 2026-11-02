@@ -53,8 +53,22 @@ SAMPLE_SIZE_PER_FILE = 25_000
 
 # Interactive dashboard appearance (dimensions are in pixels).
 CHART_WIDTH = 1500
-CHART_HEIGHT = 760
-CHART_COLORS = ["#2563EB", "#16A34A", "#F59E0B", "#DC2626", "#7C3AED", "#0891B2"]
+CHART_HEIGHT = 780
+METRIC_COLORS = {
+    "Accuracy": "#2563EB",
+    "Balanced Accuracy": "#16A34A",
+    "Precision (attack)": "#F59E0B",
+    "Recall / Detection Rate (attack)": "#DC2626",
+    "F1 (attack)": "#7C3AED",
+    "F1 (macro)": "#0891B2",
+    "ROC AUC": "#64748B",
+}
+MODEL_COLORS = {
+    "Logistic Regression": "#2563EB",
+    "Decision Tree": "#16A34A",
+    "Random Forest": "#F59E0B",
+    "XGBoost": "#7C3AED",
+}
 
 IDENTIFIER_COLUMNS = {
     "flow id", "source ip", "destination ip", "source port",
@@ -264,24 +278,42 @@ def make_dashboard(results: pd.DataFrame, output_path: Path) -> None:
         print("Install it with: python -m pip install plotly")
         return
 
+    performance_metrics = [metric for metric in METRIC_COLUMNS if metric != "False Alarm Rate"]
     chart_data = results.melt(
-        id_vars=["Model", "Split"], value_vars=METRIC_COLUMNS,
+        id_vars=["Model", "Split"], value_vars=performance_metrics,
         var_name="Metric", value_name="Score",
     )
     chart = px.bar(
         chart_data, x="Model", y="Score", color="Metric", facet_col="Split",
         barmode="group", title="Day-held-out CIC-IDS model comparison",
-        hover_data={"Score": ":.5f"}, color_discrete_sequence=CHART_COLORS,
+        hover_data={"Score": ":.5f"}, color_discrete_map=METRIC_COLORS,
     )
     chart.update_yaxes(range=[0.0, 1.02], title="Score")
     chart.update_layout(
         template="plotly_white", legend_title="Metric", width=CHART_WIDTH,
         height=CHART_HEIGHT, font=dict(family="Arial, sans-serif", size=13, color="#1F2937"),
-        title_font=dict(size=20, color="#111827"), margin=dict(l=70, r=40, t=90, b=100),
+        title_font=dict(size=20, color="#111827"), margin=dict(l=70, r=40, t=90, b=120),
     )
     dashboard_path = output_path.with_name("benchmark_dashboard.html").resolve()
     chart.write_html(dashboard_path, auto_open=True)
     print(f"Interactive validation/test chart saved to {dashboard_path}")
+
+    # False alarm rate is a cost metric, so show it separately with an explicit lower-is-better axis.
+    far_chart = px.bar(
+        results, x="Model", y="False Alarm Rate", color="Model", facet_col="Split",
+        title="False alarm rate by held-out partition (lower is better)",
+        hover_data={"False Alarm Rate": ":.5%"}, color_discrete_map=MODEL_COLORS,
+    )
+    far_max = max(float(results["False Alarm Rate"].max()) * 1.2, 0.01)
+    far_chart.update_yaxes(range=[0, far_max], tickformat=".1%", title="False alarm rate (lower is better)")
+    far_chart.update_layout(
+        template="plotly_white", width=CHART_WIDTH, height=560, showlegend=False,
+        font=dict(family="Arial, sans-serif", size=13, color="#1F2937"),
+        title_font=dict(size=20, color="#111827"), margin=dict(l=75, r=40, t=90, b=100),
+    )
+    far_path = output_path.with_name("false_alarm_dashboard.html").resolve()
+    far_chart.write_html(far_path, auto_open=False)
+    print(f"False alarm chart saved to {far_path}")
 
 
 def main() -> None:
