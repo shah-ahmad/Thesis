@@ -1,100 +1,99 @@
 # CIC-IDS Intrusion Detection Benchmark
 
-This project compares four classifiers for the binary task of distinguishing benign network flows from attack flows in CIC-IDS-style CSV data:
+This project compares Logistic Regression, Decision Tree, Random Forest, and XGBoost for binary intrusion detection. It combines the CIC-IDS2017 daily flow CSVs and reports validation and final test results for each classifier.
 
-- Logistic Regression
-- Decision Tree
-- Random Forest
-- XGBoost
+## Evaluation design
 
-The script reports attack precision, attack recall (detection rate), attack F1, ROC AUC, false alarm rate, confusion-matrix counts, training time, and prediction latency. It writes one row per model to a results CSV.
+The benchmark keeps capture days separate:
 
-## Requirements
+| Partition | CIC-IDS2017 files | Purpose |
+| --- | --- | --- |
+| Train | Monday, Tuesday, Wednesday | Fit preprocessing and model parameters |
+| Validation | Both Thursday files | Compare models and make development decisions |
+| Final test | Friday morning, DDoS, and PortScan files | Final evaluation on capture days excluded from training |
+
+Monday contains benign traffic only. The training partition also includes Tuesday and Wednesday attack traffic, so it contains both benign and attack classes. Thursday validation and Friday test are checked to contain both classes before the benchmark continues.
+
+Keeping whole capture days together is more demanding than a random row split: closely related flows from one day cannot be divided between train and test. Validation results can be used during development; reserve the Friday test results for the final report and do not tune models against them. The Friday test measures performance on those held-out CIC-IDS2017 days, not a guarantee of performance on modern networks or future attacks.
+
+All non-empty labels other than `BENIGN` are mapped to the binary attack class. Identifier fields such as IP addresses, ports, flow IDs, and timestamps are excluded. Numeric features are selected using training data only. Missing values are imputed inside each model pipeline, fit on training data only.
+
+## Requirements and install
 
 - Python 3.9 or newer
-- CIC-IDS CSV files with a `Label` column and numeric flow features
+- CIC-IDS2017 daily CSV files in `data/`
 
-## Install
-
-Run these commands from the repository folder in PowerShell:
+From the project folder in PowerShell:
 
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install numpy pandas scikit-learn xgboost
-python -m pip install plotly matplotlib
 ```
 
-If PowerShell blocks activation, use `\.venv\Scripts\python.exe` in place of `python` in the commands below.
+Plotly is optional and is only needed for the interactive browser chart:
 
-## Choose the data
-
-Put the CIC-IDS CSV files in `data/`. Open `experiment.py` and change the `DATA_FILE` setting near the top to the filename you want to run:
-
-```python
-DATA_FILE = "Monday-WorkingHours.pcap_ISCX.csv"
+```powershell
+python -m pip install plotly
 ```
 
-Save the file and run the script as usual. The `Label` column is required. `BENIGN` becomes class 0; every other non-empty label is treated as attack (class 1). Identifiers such as IP addresses, ports, flow IDs, and timestamps are excluded from the feature set. Numeric features are cleaned, and missing values are imputed within each model using training data only.
+Matplotlib is optional and is only needed for the static PNG chart script:
+
+```powershell
+python -m pip install matplotlib
+```
+
+## Data files and split configuration
+
+Place the CIC-IDS2017 CSV files in `data/` using the standard filenames. The train, validation, and test filename lists are configured near the top of `experiment.py` as `TRAIN_FILES`, `VALIDATION_FILES`, and `TEST_FILES`. Keep a complete capture day in only one list. The script stops with an error if any configured file is missing.
+
+The default caps each CSV at 25,000 sampled rows to keep the run practical. Sampling happens separately inside each CSV and preserves its benign/attack proportions. To use every row, set `SAMPLE_SIZE_PER_FILE = 0` near the top of `experiment.py`. Full-data runs can require substantial memory and time.
 
 ## Run
 
-Quick run using a maximum of 100,000 rows:
+From the repository root:
 
 ```powershell
 python .\experiment.py
 ```
 
-Use the entire selected CSV (can take substantially longer and use more memory):
+Override the per-file sample cap or seed if needed:
 
 ```powershell
-python .\experiment.py --sample-size 0
+python .\experiment.py --sample-size 50000 --seed 42 --output .\results\day_split_results.csv
 ```
 
-Change the sample size, test fraction, random seed, or output path:
+The script trains each model on Monday–Wednesday, scores it on Thursday validation and Friday final test, prints a table, and saves one row per model per split to `thesis_benchmark_results.csv` by default. It also records confusion counts, attack precision/recall/F1, macro F1, balanced accuracy, ROC AUC, false alarm rate, and timing.
 
-```powershell
-python .\experiment.py --sample-size 200000 --test-size 0.25 --seed 42 --output .\results\benchmark.csv
-```
+## Reading the results
 
-The sample is drawn approximately in proportion to the benign/attack classes. The train/test split is stratified to preserve class proportions. Scaling for Logistic Regression and missing-value imputation are fitted on training data inside each model pipeline, which prevents information from the test set leaking into training.
+- **Validation** scores are for model comparison during development.
+- **Test** scores are the final held-out evaluation; avoid using them to choose settings.
+- **Attack recall / detection rate** measures the fraction of attacks found.
+- **Attack precision** measures how many attack alerts are correct.
+- **F1 (attack)** balances attack precision and recall.
+- **F1 (macro)** gives benign and attack classes equal weight.
+- **False alarm rate** is the share of benign flows incorrectly flagged.
+- **Confusion counts** show true negatives, false positives, false negatives, and true positives.
+- **Training and prediction time** depend on the computer and sample size.
 
-## Understanding the metrics
+The day-based result may be lower than the earlier random row-split result. That is useful evidence about how well the model transfers across capture days. Scores are also affected by the specific CIC-IDS2017 files and label quality.
 
-- **Precision (attack):** Of flows predicted as attacks, the fraction that are attacks.
-- **Recall / Detection Rate (attack):** Of all attacks, the fraction detected.
-- **F1 (attack):** Harmonic mean of attack precision and recall.
-- **ROC AUC:** How well the model ranks attacks above benign flows across thresholds.
-- **False Alarm Rate:** False positives divided by all truly benign flows.
-- **Confusion counts:** True negatives, false positives, false negatives, and true positives.
-- **Prediction time:** Average prediction time per test sample on the current machine; it is hardware-dependent.
+## Charts
 
-There is no single best score for every use case. High attack recall can matter when missed attacks are costly, while a low false alarm rate can matter when analysts have limited time. Read these together and choose based on the thesis question.
+If Plotly is installed, the benchmark automatically opens an interactive chart comparing validation and test metrics and saves `benchmark_dashboard.html` beside the results CSV. Metrics still print and save when Plotly is not installed; only the interactive chart is skipped.
 
-## Results and reproducibility
+Customize the interactive chart by editing `CHART_WIDTH`, `CHART_HEIGHT`, and `CHART_COLORS` near the top of `experiment.py`.
 
-By default, results are saved to `thesis_benchmark_results.csv` in the current directory; an existing file at that path is overwritten. The fixed default seed is 42. The output includes the selected metrics and timing for all four models.
-
-## Create charts
-
-After a benchmark finishes, `experiment.py` automatically opens an interactive Plotly chart in your browser and saves it as `benchmark_dashboard.html` beside the results CSV. Hover over bars to see exact values and use the legend to show or hide metrics. The score axis is zoomed in to make small differences visible.
-
-To customize the interactive chart, edit `CHART_WIDTH`, `CHART_HEIGHT`, and `CHART_COLORS` near the top of `experiment.py`. Width and height use pixels. `CHART_COLORS` lists one color per metric in this order: accuracy, precision, recall, F1, and ROC AUC. Use HTML color codes such as `#2563EB`.
-
-To regenerate the static PNG charts from the saved CSV without rerunning the models:
+To create static PNG charts from a completed results CSV (requires Matplotlib):
 
 ```powershell
 python .\plot_results.py
 ```
 
-The PNG files are saved in the `visuals/` folder: a model-metric comparison, a false-positive versus false-negative chart, and training times. Open the images in VS Code or include them in your thesis. The performance chart zooms in on the high-score range so small differences are visible; read its y-axis, which starts at 0.97.
+The charts are saved in `visuals/` and separate validation scores from final test scores.
 
-The default stratified random row split is a useful baseline, but CIC-IDS contains correlated flows from the same capture periods. A random split can put very similar traffic in both train and test sets and overstate performance on genuinely new days, networks, or attack campaigns. For a thesis claim about generalization, add a time-based or capture/day-level evaluation with an untouched test period. Also document the exact CSV, dataset version, sample size, software versions, and machine for repeatable comparisons.
+## Reproducibility and limitations
 
-## Limitations
-
-- All non-`BENIGN` labels are combined into one attack class, so this is binary detection rather than attack-family classification.
-- Metrics depend on the chosen CSV, sample, split, and hardware.
-- Sampling changes the dataset composition; use `--sample-size 0` when feasible for full-data results.
-- Benchmark results are experimental and should be validated with a split that matches the intended deployment setting.
+The default random seed is 42. Record the dataset version, configured filenames, per-file sample cap, Python and package versions, and machine used. CIC-IDS2017 is a dated lab dataset, so even a day-held-out test does not establish performance on live or current network traffic. Binary grouping also hides which attack families are detected or missed; a later multiclass experiment could report per-attack results.
