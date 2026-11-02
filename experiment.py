@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import glob
 import time
 from pathlib import Path
 
@@ -29,6 +28,9 @@ from xgboost import XGBClassifier
 
 RANDOM_STATE = 42
 TARGET_COLUMN = "Label"
+# Change this to the CSV you want to benchmark. The file must be inside the data folder.
+# Example: DATA_FILE = "Monday-WorkingHours.pcap_ISCX.csv"
+DATA_FILE = "Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv"
 IDENTIFIER_COLUMNS = {
     "flow id", "source ip", "destination ip", "source port",
     "destination port", "timestamp", "src ip", "dst ip",
@@ -38,9 +40,6 @@ IDENTIFIER_COLUMNS = {
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Benchmark binary benign-versus-attack classifiers on a CIC-IDS CSV."
-    )
-    parser.add_argument(
-        "--data", type=Path, help="CSV file to use (defaults to the only CSV in data/)."
     )
     parser.add_argument(
         "--sample-size", type=int, default=100_000,
@@ -55,23 +54,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def select_dataset(explicit_path: Path | None) -> Path:
-    if explicit_path:
-        if not explicit_path.is_file():
-            raise FileNotFoundError(f"Dataset file does not exist: {explicit_path}")
-        return explicit_path
-
-    candidates = sorted(Path("data").glob("*.csv"))
-    if not candidates:
-        candidates = sorted(Path(".").glob("*.csv"))
-    if not candidates:
-        raise FileNotFoundError("No CSV found. Put a dataset in data/ or pass --data <file.csv>.")
-    if len(candidates) > 1:
-        names = "\n".join(f"  - {path}" for path in candidates)
-        raise ValueError(
-            "Several CSV files were found. Select one explicitly with --data:\n" + names
+def select_dataset() -> Path:
+    dataset = Path("data") / DATA_FILE
+    if not dataset.is_file():
+        available = sorted(path.name for path in Path("data").glob("*.csv"))
+        names = "\n".join(f"  - {name}" for name in available) or "  (no CSV files found)"
+        raise FileNotFoundError(
+            f"Selected dataset was not found: {dataset}\n"
+            f"Edit DATA_FILE near the top of experiment.py. CSV files in data/:\n{names}"
         )
-    return candidates[0]
+    return dataset
 
 
 def load_data(csv_path: Path, sample_size: int, seed: int) -> tuple[pd.DataFrame, np.ndarray]:
@@ -123,7 +115,7 @@ def load_data(csv_path: Path, sample_size: int, seed: int) -> tuple[pd.DataFrame
         sampled_indices = pd.concat([
             X.loc[y.index[y == label]].sample(n=count, random_state=seed).index.to_series()
             for label, count in allocation.items()
-        ]).to_numpy()
+        ]).to_numpy(copy=True)
         rng = np.random.default_rng(seed)
         rng.shuffle(sampled_indices)
         X, y = X.loc[sampled_indices], y.loc[sampled_indices].to_numpy()
@@ -205,7 +197,7 @@ def main() -> None:
     if not 0 < args.test_size < 1:
         raise ValueError("--test-size must be between 0 and 1.")
 
-    dataset = select_dataset(args.data)
+    dataset = select_dataset()
     X, y = load_data(dataset, args.sample_size, args.seed)
     print("[2/5] Creating stratified train/test split (preprocessing is fit on training data only)...")
     X_train, X_test, y_train, y_test = train_test_split(

@@ -23,38 +23,39 @@ py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install numpy pandas scikit-learn xgboost
+python -m pip install matplotlib
 ```
 
 If PowerShell blocks activation, use `\.venv\Scripts\python.exe` in place of `python` in the commands below.
 
 ## Choose the data
 
-Put the CIC-IDS CSV file or files in `data/`. If there is exactly one CSV in `data/`, the script selects it automatically. If there are multiple files, pass the exact one you want with `--data`:
+Put the CIC-IDS CSV files in `data/`. Open `experiment.py` and change the `DATA_FILE` setting near the top to the filename you want to run:
 
-```powershell
-python .\experiment.py --data .\data\Friday-WorkingHours-Afternoon-DDoS.pcap_ISCX.csv
+```python
+DATA_FILE = "Monday-WorkingHours.pcap_ISCX.csv"
 ```
 
-The program refuses to guess when it finds multiple CSVs. That avoids accidentally benchmarking a different capture than intended. The `Label` column is required. `BENIGN` becomes class 0; every other non-empty label is treated as attack (class 1). Identifiers such as IP addresses, ports, flow IDs, and timestamps are excluded from the feature set. Numeric features are cleaned, and missing values are imputed within each model using training data only.
+Save the file and run the script as usual. The `Label` column is required. `BENIGN` becomes class 0; every other non-empty label is treated as attack (class 1). Identifiers such as IP addresses, ports, flow IDs, and timestamps are excluded from the feature set. Numeric features are cleaned, and missing values are imputed within each model using training data only.
 
 ## Run
 
 Quick run using a maximum of 100,000 rows:
 
 ```powershell
-python .\experiment.py --data .\data\your-dataset.csv
+python .\experiment.py
 ```
 
 Use the entire selected CSV (can take substantially longer and use more memory):
 
 ```powershell
-python .\experiment.py --data .\data\your-dataset.csv --sample-size 0
+python .\experiment.py --sample-size 0
 ```
 
 Change the sample size, test fraction, random seed, or output path:
 
 ```powershell
-python .\experiment.py --data .\data\your-dataset.csv --sample-size 200000 --test-size 0.25 --seed 42 --output .\results\benchmark.csv
+python .\experiment.py --sample-size 200000 --test-size 0.25 --seed 42 --output .\results\benchmark.csv
 ```
 
 The sample is drawn approximately in proportion to the benign/attack classes. The train/test split is stratified to preserve class proportions. Scaling for Logistic Regression and missing-value imputation are fitted on training data inside each model pipeline, which prevents information from the test set leaking into training.
@@ -74,6 +75,16 @@ There is no single best score for every use case. High attack recall can matter 
 ## Results and reproducibility
 
 By default, results are saved to `thesis_benchmark_results.csv` in the current directory; an existing file at that path is overwritten. The fixed default seed is 42. The output includes the selected metrics and timing for all four models.
+
+## Create charts
+
+After a benchmark has created `thesis_benchmark_results.csv`, make visual charts without rerunning the models:
+
+```powershell
+python .\plot_results.py
+```
+
+The PNG files are saved in the `visuals/` folder: a model-metric comparison, a false-positive versus false-negative chart, and training times. Open the images in VS Code or include them in your thesis. The performance chart zooms in on the high-score range so small differences are visible; read its y-axis, which starts at 0.97.
 
 The default stratified random row split is a useful baseline, but CIC-IDS contains correlated flows from the same capture periods. A random split can put very similar traffic in both train and test sets and overstate performance on genuinely new days, networks, or attack campaigns. For a thesis claim about generalization, add a time-based or capture/day-level evaluation with an untouched test period. Also document the exact CSV, dataset version, sample size, software versions, and machine for repeatable comparisons.
 
