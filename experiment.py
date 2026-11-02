@@ -1,169 +1,226 @@
-import os
+"""Binary CIC-IDS flow benchmark with explicit data selection and reproducible metrics."""
+
+from __future__ import annotations
+
+import argparse
 import glob
 import time
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-
-# Models
-from sklearn.linear_model import LogisticRegression
-from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.tree import DecisionTreeClassifier
 from xgboost import XGBClassifier
 
 
-# ==========================================
-# 1. PURE NUMPY METRIC CALCULATIONS
-# (Bypasses Windows DLL Application Control blocks)
-# ==========================================
-def calculate_metrics(y_true, y_pred):
-    """
-    Computes standard cybersecurity intrusion detection metrics
-    directly using NumPy without relying on blocked C-extensions.
-    """
-    y_true = np.array(y_true)
-    y_pred = np.array(y_pred)
-
-    tp = np.sum((y_true == 1) & (y_pred == 1))
-    tn = np.sum((y_true == 0) & (y_pred == 0))
-    fp = np.sum((y_true == 0) & (y_pred == 1))
-    fn = np.sum((y_true == 1) & (y_pred == 0))
-
-    total = len(y_true)
-    acc = (tp + tn) / total if total > 0 else 0.0
-    prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0.0
-    far = fp / (fp + tn) if (fp + tn) > 0 else 0.0  # False Alarm Rate
-
-    return acc, prec, rec, f1, far
+RANDOM_STATE = 42
+TARGET_COLUMN = "Label"
+IDENTIFIER_COLUMNS = {
+    "flow id", "source ip", "destination ip", "source port",
+    "destination port", "timestamp", "src ip", "dst ip",
+}
 
 
-# ==========================================
-# 2. DATA PREPROCESSING PIPELINE
-# ==========================================
-def load_and_preprocess_data(csv_filepath: str, sample_size: int = 100000):
-    print(f"[*] Loading data from: {csv_filepath}")
-    df = pd.read_csv(csv_filepath, low_memory=False)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Benchmark binary benign-versus-attack classifiers on a CIC-IDS CSV."
+    )
+    parser.add_argument(
+        "--data", type=Path, help="CSV file to use (defaults to the only CSV in data/)."
+    )
+    parser.add_argument(
+        "--sample-size", type=int, default=100_000,
+        help="Maximum rows to sample before splitting; use 0 for all rows (default: 100000).",
+    )
+    parser.add_argument("--test-size", type=float, default=0.20, help="Test fraction (default: 0.20).")
+    parser.add_argument("--seed", type=int, default=RANDOM_STATE, help="Random seed (default: 42).")
+    parser.add_argument(
+        "--output", type=Path, default=Path("thesis_benchmark_results.csv"),
+        help="CSV path for the results table.",
+    )
+    return parser.parse_args()
 
-    # 1. Fix CIC-IDS-2017 leading/trailing whitespace in column names
-    df.columns = df.columns.str.strip()
 
-    # 2. Subsample for prototype speed (remove sample_size or increase for final paper)
-    if sample_size and sample_size < len(df):
-        print(f"[*] Subsampling to {sample_size:,} records for fast prototyping...")
-        df = df.sample(n=sample_size, random_state=42)
+def select_dataset(explicit_path: Path | None) -> Path:
+    if explicit_path:
+        if not explicit_path.is_file():
+            raise FileNotFoundError(f"Dataset file does not exist: {explicit_path}")
+        return explicit_path
 
-    # 3. Clean infinite and missing values
-    print("[*] Cleaning infinite and missing values...")
-    df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    df.dropna(inplace=True)
+    candidates = sorted(Path("data").glob("*.csv"))
+    if not candidates:
+        candidates = sorted(Path(".").glob("*.csv"))
+    if not candidates:
+        raise FileNotFoundError("No CSV found. Put a dataset in data/ or pass --data <file.csv>.")
+    if len(candidates) > 1:
+        names = "\n".join(f"  - {path}" for path in candidates)
+        raise ValueError(
+            "Several CSV files were found. Select one explicitly with --data:\n" + names
+        )
+    return candidates[0]
 
-    # 4. Remove duplicate rows
-    df.drop_duplicates(inplace=True)
 
-    # 5. Drop socket/metadata features to prevent data leakage
-    leakage_cols = ['Flow ID', 'Source IP', 'Source Port', 'Destination IP', 'Timestamp']
-    existing_leakage_cols = [col for col in leakage_cols if col in df.columns]
-    if existing_leakage_cols:
-        df.drop(columns=existing_leakage_cols, inplace=True)
+def load_data(csv_path: Path, sample_size: int, seed: int) -> tuple[pd.DataFrame, np.ndarray]:
+    print(f"[1/5] Reading {csv_path}")
+    frame = pd.read_csv(csv_path, low_memory=False)
+    frame.columns = frame.columns.astype(str).str.strip()
+    if TARGET_COLUMN not in frame.columns:
+        raise ValueError(f"Required target column '{TARGET_COLUMN}' is missing from {csv_path}.")
 
-    # 6. Separate features (X) and label (y)
-    target_col = 'Label'
-    X = df.drop(columns=[target_col])
-    y_raw = df[target_col]
+    original_rows = len(frame)
+    frame = frame.drop_duplicates()
+    duplicate_rows = original_rows - len(frame)
+    labels = frame[TARGET_COLUMN].astype(str).str.strip()
+    valid_labels = labels.notna() & labels.ne("")
+    frame, labels = frame.loc[valid_labels].copy(), labels.loc[valid_labels]
+    y = (labels.str.casefold() != "benign").astype("int8")
 
-    # Convert binary label: BENIGN -> 0, ANY ATTACK -> 1
-    y = y_raw.apply(lambda x: 0 if str(x).strip().upper() == 'BENIGN' else 1).values
+    # Remove identifiers and constant columns. Numeric coercion handles CIC-IDS whitespace
+    # and occasional malformed values; missing values are imputed inside each model pipeline.
+    drop_columns = [
+        col for col in frame.columns
+        if col != TARGET_COLUMN and col.strip().casefold() in IDENTIFIER_COLUMNS
+    ]
+    X = frame.drop(columns=[TARGET_COLUMN, *drop_columns]).copy()
+    X.columns = [str(column).strip() for column in X.columns]
+    X = X.apply(pd.to_numeric, errors="coerce")
+    X = X.replace([np.inf, -np.inf], np.nan)
+    all_missing = X.columns[X.isna().all()].tolist()
+    if all_missing:
+        X = X.drop(columns=all_missing)
+    constant = X.columns[X.nunique(dropna=True) <= 1].tolist()
+    if constant:
+        X = X.drop(columns=constant)
+    if X.empty:
+        raise ValueError("No usable numeric feature columns remain after cleaning.")
 
-    print(f"[+] Cleaned dataset: {X.shape[0]:,} records, {X.shape[1]} features")
-    benign_count = np.sum(y == 0)
-    attack_count = np.sum(y == 1)
-    print(f"[+] Distribution: {benign_count:,} Benign (0), {attack_count:,} Malicious (1)")
+    if sample_size > 0 and len(X) > sample_size:
+        class_counts = y.value_counts()
+        if sample_size < len(class_counts):
+            raise ValueError("Sample size must be at least the number of classes (2).")
+        allocation = (class_counts / len(y) * sample_size).round().astype(int).clip(lower=1)
+        while allocation.sum() > sample_size:
+            largest = allocation.idxmax()
+            if allocation[largest] <= 1:
+                break
+            allocation[largest] -= 1
+        while allocation.sum() < sample_size:
+            allocation[class_counts.idxmax()] += 1
+        sampled_indices = pd.concat([
+            X.loc[y.index[y == label]].sample(n=count, random_state=seed).index.to_series()
+            for label, count in allocation.items()
+        ]).to_numpy()
+        rng = np.random.default_rng(seed)
+        rng.shuffle(sampled_indices)
+        X, y = X.loc[sampled_indices], y.loc[sampled_indices].to_numpy()
+    else:
+        y = y.to_numpy()
 
+    if len(np.unique(y)) < 2:
+        raise ValueError("The selected data contains only one class after cleaning/sampling.")
+    print(f"       Usable rows: {len(X):,} | features: {X.shape[1]} | duplicate rows removed: {duplicate_rows:,}")
+    print(f"       Benign: {(y == 0).sum():,} | attack: {(y == 1).sum():,}")
     return X, y
 
 
-# ==========================================
-# 3. MODEL BENCHMARKING HARNESS
-# ==========================================
-def evaluate_models(X_train, X_test, y_train, y_test):
-    models = {
-        "Logistic Regression": LogisticRegression(max_iter=1000, class_weight='balanced', random_state=42),
-        "Decision Tree": DecisionTreeClassifier(max_depth=15, class_weight='balanced', random_state=42),
-        "Random Forest": RandomForestClassifier(n_estimators=100, max_depth=15, n_jobs=-1, class_weight='balanced', random_state=42),
-        "XGBoost": XGBClassifier(n_estimators=100, max_depth=6, learning_rate=0.1, n_jobs=-1, random_state=42, eval_metric='logloss')
+def build_models(seed: int) -> dict[str, object]:
+    return {
+        "Logistic Regression": make_pipeline(
+            SimpleImputer(strategy="median"), StandardScaler(),
+            LogisticRegression(max_iter=2000, class_weight="balanced", random_state=seed),
+        ),
+        "Decision Tree": make_pipeline(
+            SimpleImputer(strategy="median"),
+            DecisionTreeClassifier(max_depth=20, min_samples_leaf=2,
+                                   class_weight="balanced", random_state=seed),
+        ),
+        "Random Forest": make_pipeline(
+            SimpleImputer(strategy="median"),
+            RandomForestClassifier(n_estimators=200, max_features="sqrt", min_samples_leaf=2,
+                                   class_weight="balanced_subsample", n_jobs=-1, random_state=seed),
+        ),
+        "XGBoost": make_pipeline(
+            SimpleImputer(strategy="median"),
+            XGBClassifier(n_estimators=200, max_depth=6, learning_rate=0.08,
+                          subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0,
+                          n_jobs=-1, random_state=seed, eval_metric="logloss"),
+        ),
     }
 
-    results = []
 
+def evaluate_models(
+    models: dict[str, object], X_train: pd.DataFrame, X_test: pd.DataFrame,
+    y_train: np.ndarray, y_test: np.ndarray,
+) -> pd.DataFrame:
+    rows = []
     for name, model in models.items():
-        print(f"\n--- Training {name} ---")
-
-        # 1. Train and record duration
-        start_train = time.time()
+        print(f"[3/5] Training {name}...")
+        started = time.perf_counter()
         model.fit(X_train, y_train)
-        train_time = time.time() - start_train
+        train_seconds = time.perf_counter() - started
 
-        # 2. Predict and measure inference latency (in milliseconds per sample)
-        start_pred = time.time()
-        y_pred = model.predict(X_test)
-        total_pred_time = time.time() - start_pred
-        latency_ms = (total_pred_time / len(X_test)) * 1000
+        started = time.perf_counter()
+        predictions = model.predict(X_test)
+        predict_seconds = time.perf_counter() - started
+        tn, fp, fn, tp = confusion_matrix(y_test, predictions, labels=[0, 1]).ravel()
+        try:
+            auc = roc_auc_score(y_test, model.predict_proba(X_test)[:, 1])
+        except (AttributeError, ValueError):
+            auc = float("nan")
 
-        # 3. Compute metrics via NumPy
-        acc, prec, rec, f1, far = calculate_metrics(y_test, y_pred)
-
-        results.append({
+        rows.append({
             "Model": name,
-            "Accuracy": round(acc, 4),
-            "Precision": round(prec, 4),
-            "Recall (DR)": round(rec, 4),
-            "F1-Score": round(f1, 4),
-            "False Alarm Rate (FAR)": round(far, 4),
-            "Train Time (s)": round(train_time, 2),
-            "Inference Latency (ms/sample)": round(latency_ms, 4)
+            "Accuracy": accuracy_score(y_test, predictions),
+            "Precision (attack)": precision_score(y_test, predictions, zero_division=0),
+            "Recall / Detection Rate (attack)": recall_score(y_test, predictions, zero_division=0),
+            "F1 (attack)": f1_score(y_test, predictions, zero_division=0),
+            "ROC AUC": auc,
+            "False Alarm Rate": fp / (fp + tn) if fp + tn else 0.0,
+            "True Negatives": int(tn), "False Positives": int(fp),
+            "False Negatives": int(fn), "True Positives": int(tp),
+            "Training Time (s)": train_seconds,
+            "Prediction Time (ms/sample)": predict_seconds * 1000 / len(y_test),
         })
+    return pd.DataFrame(rows)
 
-    return pd.DataFrame(results)
 
+def main() -> None:
+    args = parse_args()
+    if args.sample_size < 0:
+        raise ValueError("--sample-size must be 0 (all rows) or a positive integer.")
+    if not 0 < args.test_size < 1:
+        raise ValueError("--test-size must be between 0 and 1.")
 
-# ==========================================
-# 4. MAIN EXECUTION
-# ==========================================
-if __name__ == "__main__":
-    # 1. Automatically find the CSV file in 'data' or current directory
-    csv_files = glob.glob("data/*.csv") or glob.glob("*.csv")
-    
-    if not csv_files:
-        raise FileNotFoundError("[-] No CSV found! Put your CIC-IDS CSV inside the 'data' folder.")
-
-    DATASET_PATH = csv_files[0]
-    print(f"[+] Found dataset file: {DATASET_PATH}")
-
-    # 2. Preprocess
-    X, y = load_and_preprocess_data(DATASET_PATH, sample_size=100000)
-
-    # 3. Stratified Train-Test Split (80% train, 20% test)
+    dataset = select_dataset(args.data)
+    X, y = load_data(dataset, args.sample_size, args.seed)
+    print("[2/5] Creating stratified train/test split (preprocessing is fit on training data only)...")
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.20, random_state=42, stratify=y
+        X, y, test_size=args.test_size, random_state=args.seed, stratify=y
     )
+    print(f"       Train rows: {len(y_train):,} | test rows: {len(y_test):,}")
 
-    # 4. Feature Scaling
-    print("[*] Normalizing features using StandardScaler...")
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
+    results = evaluate_models(build_models(args.seed), X_train, X_test, y_train, y_test)
+    print("[4/5] Results (higher is better except false alarm rate and time):")
+    print(results.to_string(index=False, float_format=lambda value: f"{value:.4f}"))
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    results.to_csv(args.output, index=False, float_format="%.6f")
+    print(f"[5/5] Saved {len(results)} model results to {args.output}")
+    print("       Note: random row splits can overstate performance on traffic from the same capture/day.")
 
-    # 5. Run Benchmark
-    results_df = evaluate_models(X_train_scaled, X_test_scaled, y_train, y_test)
 
-    # 6. Display & Save Results
-    print("\n" + "=" * 65)
-    print("           FINAL THESIS BENCHMARK TABLE")
-    print("=" * 65)
-    print(results_df.to_string(index=False))
-
-    results_df.to_csv("thesis_benchmark_results.csv", index=False)
-    print("\n[+] Benchmark saved successfully to 'thesis_benchmark_results.csv'!")
+if __name__ == "__main__":
+    main()
