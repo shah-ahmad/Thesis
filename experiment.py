@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import plotly.express as px
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
@@ -31,6 +32,10 @@ TARGET_COLUMN = "Label"
 # Change this to the CSV you want to benchmark. The file must be inside the data folder.
 # Example: DATA_FILE = "Monday-WorkingHours.pcap_ISCX.csv"
 DATA_FILE = "Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv"
+# Interactive dashboard appearance (dimensions are in pixels).
+CHART_WIDTH = 1200
+CHART_HEIGHT = 720
+CHART_COLORS = ["#2563EB", "#16A34A", "#F59E0B", "#DC2626", "#7C3AED"]
 IDENTIFIER_COLUMNS = {
     "flow id", "source ip", "destination ip", "source port",
     "destination port", "timestamp", "src ip", "dst ip",
@@ -212,6 +217,37 @@ def main() -> None:
     results.to_csv(args.output, index=False, float_format="%.6f")
     print(f"[5/5] Saved {len(results)} model results to {args.output}")
     print("       Note: random row splits can overstate performance on traffic from the same capture/day.")
+
+    # Open an interactive dashboard in the browser after every benchmark run.
+    chart = px.bar(
+        results.melt(
+            id_vars="Model",
+            value_vars=["Accuracy", "Precision (attack)",
+                        "Recall / Detection Rate (attack)", "F1 (attack)", "ROC AUC"],
+            var_name="Metric",
+            value_name="Score",
+        ),
+        x="Model",
+        y="Score",
+        color="Metric",
+        barmode="group",
+        title=f"Interactive model performance — {dataset.name}",
+        hover_data={"Score": ":.5f"},
+        color_discrete_sequence=CHART_COLORS,
+    )
+    chart.update_yaxes(range=[0.97, 1.005], title="Score (zoomed to show differences)")
+    chart.update_layout(
+        template="plotly_white",
+        legend_title="Metric",
+        width=CHART_WIDTH,
+        height=CHART_HEIGHT,
+        font=dict(family="Arial, sans-serif", size=13, color="#1F2937"),
+        title_font=dict(size=20, color="#111827"),
+        margin=dict(l=80, r=40, t=90, b=100),
+    )
+    chart_path = args.output.with_name("benchmark_dashboard.html").resolve()
+    chart.write_html(chart_path, auto_open=True)
+    print(f"       Interactive chart opened; saved to {chart_path}")
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install numpy pandas scikit-learn xgboost
-python -m pip install matplotlib
+python -m pip install plotly matplotlib
 ```
 
 If PowerShell blocks activation, use `\.venv\Scripts\python.exe` in place of `python` in the commands below.
@@ -78,7 +78,11 @@ By default, results are saved to `thesis_benchmark_results.csv` in the current d
 
 ## Create charts
 
-After a benchmark has created `thesis_benchmark_results.csv`, make visual charts without rerunning the models:
+After a benchmark finishes, `experiment.py` automatically opens an interactive Plotly chart in your browser and saves it as `benchmark_dashboard.html` beside the results CSV. Hover over bars to see exact values and use the legend to show or hide metrics. The score axis is zoomed in to make small differences visible.
+
+To customize the interactive chart, edit `CHART_WIDTH`, `CHART_HEIGHT`, and `CHART_COLORS` near the top of `experiment.py`. Width and height use pixels. `CHART_COLORS` lists one color per metric in this order: accuracy, precision, recall, F1, and ROC AUC. Use HTML color codes such as `#2563EB`.
+
+To regenerate the static PNG charts from the saved CSV without rerunning the models:
 
 ```powershell
 python .\plot_results.py
