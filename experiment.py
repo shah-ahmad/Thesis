@@ -64,6 +64,7 @@ METRIC_COLORS = {
     "ROC AUC": "#64748B",
 }
 MODEL_COLORS = {
+    "Majority-Class Baseline": "#6B7280",
     "Logistic Regression": "#2563EB",
     "Decision Tree": "#16A34A",
     "Random Forest": "#F59E0B",
@@ -156,13 +157,20 @@ def prepare_features(
     train_frame: pd.DataFrame,
     validation_frame: pd.DataFrame,
     test_frame: pd.DataFrame,
-) -> tuple[pd.DataFrame, np.ndarray, pd.DataFrame, np.ndarray, pd.DataFrame, np.ndarray]:
+) -> tuple[
+    pd.DataFrame, np.ndarray, np.ndarray,
+    pd.DataFrame, np.ndarray, np.ndarray,
+    pd.DataFrame, np.ndarray, np.ndarray,
+]:
     """Clean features and select columns using training data only."""
     partitions = []
-    labels = []
+    binary_labels = []
+    family_labels = []
     for frame in (train_frame, validation_frame, test_frame):
-        label_text = frame[TARGET_COLUMN].astype(str).str.strip().str.casefold()
-        y = (label_text != "benign").astype("int8").to_numpy()
+        original_labels = frame[TARGET_COLUMN].astype(str).str.strip()
+        normalized_labels = original_labels.str.casefold()
+        y = (normalized_labels != "benign").astype("int8").to_numpy()
+        families = normalized_labels.to_numpy()
         drop_columns = [
             column for column in frame.columns
             if column != TARGET_COLUMN and column.strip().casefold() in IDENTIFIER_COLUMNS
@@ -171,7 +179,8 @@ def prepare_features(
         X.columns = [str(column).strip() for column in X.columns]
         X = X.apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
         partitions.append(X)
-        labels.append(y)
+        binary_labels.append(y)
+        family_labels.append(families)
 
     X_train, X_validation, X_test = partitions
     usable_columns = [
@@ -184,12 +193,16 @@ def prepare_features(
     X_validation = X_validation.reindex(columns=usable_columns)
     X_test = X_test.reindex(columns=usable_columns)
 
-    for split_name, y in zip(("train", "validation", "test"), labels):
+    for split_name, y in zip(("train", "validation", "test"), binary_labels):
         counts = np.bincount(y, minlength=2)
         print(f"{split_name.title():12} rows: {len(y):,} | benign: {counts[0]:,} | attack: {counts[1]:,}")
         if len(np.unique(y)) < 2:
             raise ValueError(f"The {split_name} partition must contain benign and attack rows.")
-    return X_train, labels[0], X_validation, labels[1], X_test, labels[2]
+    return (
+        X_train, binary_labels[0], family_labels[0],
+        X_validation, binary_labels[1], family_labels[1],
+        X_test, binary_labels[2], family_labels[2],
+    )
 
 
 def build_models(seed: int) -> dict[str, object]:
@@ -238,13 +251,46 @@ def score_partition(
 def evaluate_models(
     X_train: pd.DataFrame,
     y_train: np.ndarray,
+    family_train: np.ndarray,
     X_validation: pd.DataFrame,
     y_validation: np.ndarray,
     X_test: pd.DataFrame,
     y_test: np.ndarray,
+    family_test: np.ndarray,
     seed: int,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     rows = []
+    family_rows = []
+    majority_class = int(np.bincount(y_train).argmax())
+    train_family_counts = pd.Series(family_train).value_counts()
+    print(f"Majority-class baseline predicts: {'attack' if majority_class else 'benign'}")
+
+    for split_name, y_split in (("Validation", y_validation), ("Test", y_test)):
+        predictions = np.full(len(y_split), majority_class, dtype="int8")
+        probabilities = np.full(len(y_split), float(majority_class), dtype="float64")
+        rows.append({
+            "Model": "Majority-Class Baseline",
+            "Split": split_name,
+            **score_partition(y_split, predictions, probabilities),
+            "Training Time (s)": 0.0,
+            "Prediction Time (ms/sample)": 0.0,
+        })
+        if split_name == "Test":
+            test_families = pd.Series(family_test)
+            for family in sorted(test_families.unique()):
+                if family == "benign":
+                    continue
+                support = int((test_families == family).sum())
+                family_rows.append({
+                    "Model": "Majority-Class Baseline",
+                    "Attack Family": family,
+                    "Train Support": int(train_family_counts.get(family, 0)),
+                    "Test Support": support,
+                    "Detected": 0 if majority_class == 0 else support,
+                    "Missed": support if majority_class == 0 else 0,
+                    "Recall": 0.0 if majority_class == 0 else 1.0,
+                })
+
     for name, model in build_models(seed).items():
         print(f"Training {name} on train days...")
         started = time.perf_counter()
@@ -267,10 +313,31 @@ def evaluate_models(
                 "Prediction Time (ms/sample)": predict_seconds * 1000 / len(y_split),
             }
             rows.append(row)
-    return pd.DataFrame(rows)
+
+            if split_name == "Test":
+                test_families = pd.Series(family_test)
+                family_counts = train_family_counts
+                for family in sorted(test_families.unique()):
+                    if family == "benign":
+                        continue
+                    mask = test_families.to_numpy() == family
+                    support = int(mask.sum())
+                    detected = int(prediction[mask].sum())
+                    family_rows.append({
+                        "Model": name,
+                        "Attack Family": family,
+                        "Train Support": int(family_counts.get(family, 0)),
+                        "Test Support": support,
+                        "Detected": detected,
+                        "Missed": support - detected,
+                        "Recall": detected / support if support else 0.0,
+                    })
+    return pd.DataFrame(rows), pd.DataFrame(family_rows)
 
 
-def make_dashboard(results: pd.DataFrame, output_path: Path) -> None:
+def make_dashboard(
+    results: pd.DataFrame, family_results: pd.DataFrame, output_path: Path
+) -> None:
     try:
         import plotly.express as px
     except ImportError:
@@ -315,6 +382,22 @@ def make_dashboard(results: pd.DataFrame, output_path: Path) -> None:
     far_chart.write_html(far_path, auto_open=False)
     print(f"False alarm chart saved to {far_path}")
 
+    family_chart = px.bar(
+        family_results, x="Attack Family", y="Recall", color="Model", barmode="group",
+        title="Friday test attack-family recall (higher is better)",
+        hover_data={"Train Support": True, "Test Support": True, "Detected": True, "Missed": True},
+        color_discrete_map=MODEL_COLORS,
+    )
+    family_chart.update_yaxes(range=[0, 1.02], title="Attack-family recall")
+    family_chart.update_layout(
+        template="plotly_white", width=CHART_WIDTH, height=620,
+        font=dict(family="Arial, sans-serif", size=13, color="#1F2937"),
+        title_font=dict(size=20, color="#111827"), margin=dict(l=70, r=40, t=90, b=140),
+    )
+    family_path = output_path.with_name("attack_family_dashboard.html").resolve()
+    family_chart.write_html(family_path, auto_open=False)
+    print(f"Per-family chart saved to {family_path}")
+
 
 def main() -> None:
     args = parse_args()
@@ -325,23 +408,30 @@ def main() -> None:
     train_frame = load_partition(TRAIN_FILES, "training", args.sample_size, args.seed)
     validation_frame = load_partition(VALIDATION_FILES, "validation", args.sample_size, args.seed)
     test_frame = load_partition(TEST_FILES, "test", args.sample_size, args.seed)
-    X_train, y_train, X_validation, y_validation, X_test, y_test = prepare_features(
-        train_frame, validation_frame, test_frame
-    )
+    (
+        X_train, y_train, family_train,
+        X_validation, y_validation, family_validation,
+        X_test, y_test, family_test,
+    ) = prepare_features(train_frame, validation_frame, test_frame)
     del train_frame, validation_frame, test_frame
     gc.collect()
 
-    results = evaluate_models(
-        X_train, y_train, X_validation, y_validation, X_test, y_test, args.seed
+    results, family_results = evaluate_models(
+        X_train, y_train, family_train,
+        X_validation, y_validation, family_validation,
+        X_test, y_test, family_test, args.seed,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     results.to_csv(args.output, index=False, float_format="%.6f")
+    family_output = args.output.with_name("attack_family_test_results.csv")
+    family_results.to_csv(family_output, index=False, float_format="%.6f")
     print("\nValidation and final test results (higher is better except FAR and time):")
     display_columns = ["Model", "Split", *METRIC_COLUMNS, "Training Time (s)"]
     print(results[display_columns].to_string(index=False, float_format=lambda value: f"{value:.4f}"))
     print(f"\nSaved results to {args.output.resolve()}")
+    print(f"Saved per-family final test results to {family_output.resolve()}")
     print("The Friday test partition was held out by capture day and was not used to fit preprocessing or models.")
-    make_dashboard(results, args.output)
+    make_dashboard(results, family_results, args.output)
 
 
 if __name__ == "__main__":

@@ -64,7 +64,7 @@ Override the per-file sample cap or seed if needed:
 python .\experiment.py --sample-size 50000 --seed 42 --output .\results\day_split_results.csv
 ```
 
-The script trains each model on Monday–Wednesday, scores it on Thursday validation and Friday final test, prints a table, and saves one row per model per split to `thesis_benchmark_results.csv` by default. It also records confusion counts, attack precision/recall/F1, macro F1, balanced accuracy, ROC AUC, false alarm rate, and timing.
+The script trains each model on Monday–Wednesday, scores it on Thursday validation and Friday final test, prints a table, and saves one row per model per split to `thesis_benchmark_results.csv` by default. A majority-class baseline is included for comparison. It also saves `attack_family_test_results.csv`, with each Friday attack family's training support, test support, detections, misses, and recall.
 
 ## Reading the results
 
@@ -76,13 +76,16 @@ The script trains each model on Monday–Wednesday, scores it on Thursday valida
 - **F1 (macro)** gives benign and attack classes equal weight.
 - **False alarm rate** is the share of benign flows incorrectly flagged.
 - **Confusion counts** show true negatives, false positives, false negatives, and true positives.
+- **Majority-class baseline** predicts the most common training label every time; compare model performance with it, especially when classes are imbalanced.
 - **Training and prediction time** depend on the computer and sample size.
 
 The day-based result may be lower than the earlier random row-split result. That is useful evidence about how well the model transfers across capture days. Scores are also affected by the specific CIC-IDS2017 files and label quality.
 
+For H3, compare `Train Support` with per-family test recall, but interpret this carefully: attack families with zero training examples are unseen families. Their detection performance measures generalization to novel attacks, not the isolated effect of class imbalance. Limit an imbalance claim to families represented in training and evaluated under a design that controls for attack-family novelty.
+
 ## Charts
 
-If Plotly is installed, the benchmark automatically opens an interactive chart comparing validation and test performance metrics and saves `benchmark_dashboard.html` beside the results CSV. Every metric has its own distinct color. False alarm rate is in a separate chart, clearly marked lower-is-better, saved as `false_alarm_dashboard.html`. Metrics still print and save when Plotly is not installed; only the interactive charts are skipped.
+If Plotly is installed, the benchmark automatically opens an interactive chart comparing validation and test performance metrics and saves `benchmark_dashboard.html` beside the results CSV. Every metric has its own distinct color. False alarm rate is in a separate chart, clearly marked lower-is-better, saved as `false_alarm_dashboard.html`. Per-family test recall is saved as `attack_family_dashboard.html`. Metrics and CSV results still save when Plotly is not installed; only the interactive charts are skipped.
 
 Customize the interactive chart size and palettes by editing `CHART_WIDTH`, `CHART_HEIGHT`, `METRIC_COLORS`, and `MODEL_COLORS` near the top of `experiment.py`.
 
@@ -92,7 +95,7 @@ To create static PNG charts from a completed results CSV (requires Matplotlib):
 python .\plot_results.py
 ```
 
-The charts are saved in `visuals/` and separate validation scores from final test scores. Performance metrics use distinct colors; false alarm rate has its own figure and is labeled lower-is-better.
+The charts are saved in `visuals/` and separate validation scores from final test scores. Performance metrics use distinct colors; false alarm rate has its own figure and is labeled lower-is-better. If `attack_family_test_results.csv` is present, the script also creates `attack_family_recall.png`.
 
 ## Reproducibility and limitations
 

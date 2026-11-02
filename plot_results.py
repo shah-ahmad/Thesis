@@ -103,6 +103,30 @@ def main() -> None:
     fig.tight_layout()
     fig.savefig(args.output_dir / "training_time.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
+
+    family_path = Path("attack_family_test_results.csv")
+    if family_path.is_file():
+        families = pd.read_csv(family_path)
+        family_required = {"Model", "Attack Family", "Train Support", "Test Support", "Recall"}
+        missing_family = family_required - set(families.columns)
+        if missing_family:
+            raise ValueError(f"Attack-family CSV is missing columns: {', '.join(sorted(missing_family))}")
+        family_table = families.pivot(index="Attack Family", columns="Model", values="Recall")
+        family_models = [model for model in MODEL_COLORS if model in family_table.columns]
+        family_table[family_models].plot(
+            kind="bar", figsize=(13, 6), color=[MODEL_COLORS[model] for model in family_models]
+        )
+        ax = plt.gca()
+        ax.set_title("Friday test recall by attack family")
+        ax.set_ylabel("Recall (higher is better)")
+        ax.set_xlabel("Attack family")
+        ax.set_ylim(0, 1.05)
+        ax.tick_params(axis="x", rotation=25)
+        ax.grid(axis="y", alpha=0.25)
+        ax.legend(title="Model", fontsize=8)
+        plt.tight_layout()
+        plt.savefig(args.output_dir / "attack_family_recall.png", dpi=180, bbox_inches="tight")
+        plt.close()
     print(f"Created validation/test charts in {args.output_dir.resolve()}")
 
 
