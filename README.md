@@ -2,6 +2,12 @@
 
 This project compares Logistic Regression, Decision Tree, Random Forest, and XGBoost for binary intrusion detection. It combines the CIC-IDS2017 daily flow CSVs and reports validation and final test results for each classifier.
 
+The current version also includes a majority-class baseline, attack-family test reporting, class-balanced training for Logistic Regression, Decision Tree, and Random Forest, and charts for comparing model results.
+
+## Dataset download
+
+The experiment uses the CIC-IDS2017 dataset. The CSV files are available in [this Google Drive folder](https://drive.google.com/drive/folders/1nAl7BzZeqE-SW1ogqAX6UPtJFftOO8v5?usp=drive_link) to make it easier to download and test the project. Download the daily CSV files and place them in the project’s `data/` folder, keeping their standard filenames. The files are large, so they are shared through Drive rather than stored in the GitHub repository.
+
 ## Evaluation design
 
 The benchmark keeps capture days separate:
@@ -52,7 +58,27 @@ The default caps each CSV at 25,000 sampled rows to keep the run practical. Samp
 
 ## Run
 
-From the repository root:
+### In VS Code on Windows
+
+1. Open the project folder that contains `experiment.py` and the `data/` folder.
+2. In VS Code, choose **Terminal → New Terminal**. Make sure the terminal is at the project root (the folder containing `experiment.py`).
+3. Install the required packages if you have not already done so:
+
+```powershell
+python -m pip install numpy pandas scikit-learn xgboost
+```
+
+4. Run the experiment:
+
+```powershell
+python .\experiment.py
+```
+
+This is a Python project; run the Python script in the terminal rather than using `npm run dev`. If `python` is not recognized, try `py .\experiment.py`. If you see a missing-package error, install that package with `python -m pip install package-name`.
+
+### From the command line
+
+Run the same command from the repository root:
 
 ```powershell
 python .\experiment.py
